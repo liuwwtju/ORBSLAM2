@@ -23,7 +23,9 @@
 #include<algorithm>
 #include<fstream>
 #include<chrono>
-
+#include<tf/transform_broadcaster.h>
+#include "../../../include/Converter.h"
+#include <nav_msgs/Path.h>
 #include<ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
@@ -35,6 +37,10 @@
 #include"../../../include/System.h"
 
 using namespace std;
+
+ros::Publisher pose_pub;
+nav_msgs::Path stereo_path;
+ros::Publisher stereo_path_pub;
 
 class ImageGrabber
 {
@@ -124,6 +130,9 @@ int main(int argc, char **argv)
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
     message_filters::Synchronizer<sync_pol> sync(sync_pol(10), left_sub,right_sub);
     sync.registerCallback(boost::bind(&ImageGrabber::GrabStereo,&igb,_1,_2));
+    
+    pose_pub = nh.advertise<geometry_msgs::PoseStamped>("ORB_SLAM/pose", 5);//
+    stereo_path_pub = nh.advertise<nav_msgs::Path>("ORB_SLAM/path",10);//
 
     ros::spin();
 
@@ -174,7 +183,28 @@ void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr& msgLeft,const se
     }
     else
     {
-        mpSLAM->TrackStereo(cv_ptrLeft->image,cv_ptrRight->image,cv_ptrLeft->header.stamp.toSec());
+        cv::Mat Tcw;
+        Tcw = mpSLAM->TrackStereo(cv_ptrLeft->image,cv_ptrRight->image,cv_ptrLeft->header.stamp.toSec());
+        
+        geometry_msgs::PoseStamped pose;
+        pose.header.stamp = ros::Time::now();
+        pose.header.frame_id ="path";
+
+        cv::Mat Rwc = Tcw.rowRange(0,3).colRange(0,3).t(); // Rotation information
+        cv::Mat twc = -Rwc*Tcw.rowRange(0,3).col(3); // translation information
+        vector<float> q = ORB_SLAM2::Converter::toQuaternion(Rwc);
+
+        tf::Transform new_transform;
+        new_transform.setOrigin(tf::Vector3(twc.at<float>(0, 0), twc.at<float>(0, 1), twc.at<float>(0, 2)));
+        tf::Quaternion quaternion(q[0], q[1], q[2], q[3]);
+        new_transform.setRotation(quaternion);
+        tf::poseTFToMsg(new_transform, pose.pose);
+        pose_pub.publish(pose);
+        
+        stereo_path.header.frame_id="path";
+        stereo_path.header.stamp=ros::Time::now();
+        stereo_path.poses.push_back(pose);
+        stereo_path_pub.publish(stereo_path);
     }
 
 }
